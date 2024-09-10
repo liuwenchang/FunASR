@@ -296,7 +296,7 @@ bool myAuthorize(std::string licenseFile, int& threadNum, long long& endTime) {
 	LOG(INFO) <<"授权路数："<< threadNum;
 	if(threadNum <= 0)
 	{
-		LOG(INFO) <<"授权路数必须大于";
+		LOG(INFO) <<"授权路数必须大于0";
 		return false;
 	}
     return true;
