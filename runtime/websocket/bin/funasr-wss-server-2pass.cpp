@@ -13,6 +13,322 @@
 #include <fstream>
 #include "util.h"
 
+/*************************************************************
+* 
+*************************************************************/
+
+#define LICENSE_FILE "license-file"
+
+#include <stdio.h>
+#include <time.h>
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#else
+#include <unistd.h>
+#endif
+#include <stdlib.h>
+
+using json = nlohmann::json;
+
+// 需要使用RSA_free(publicKey);释放
+RSA* getPublicKey(const std::string& publicKeyPem) {
+    BIO* bio = BIO_new_mem_buf(publicKeyPem.data(), -1);
+    RSA* rsa = PEM_read_bio_RSA_PUBKEY(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    return rsa;
+}
+
+// 需要使用RSA_free(publicKey);释放
+RSA* getPublicKeyByFile(const std::string& fileName) {
+    // 读取公钥
+    RSA* publicKey = nullptr;
+    FILE* pubPemfile = fopen(fileName.c_str(), "r");
+    //FILE* pubPemfile = fopen("public_key.pem", "r");
+    if (!pubPemfile) {
+        std::cerr << "Could not open public key file." << std::endl;
+        return nullptr;
+    }
+
+    publicKey = PEM_read_RSA_PUBKEY(pubPemfile, nullptr, nullptr, nullptr);
+    if (!publicKey) {
+        std::cerr << "Could not read public key." << std::endl;
+        fclose(pubPemfile);
+        return nullptr;
+    }
+    fclose(pubPemfile);
+    return publicKey;
+}
+
+// 需要 delete [] output_data
+int sslBase64Decode(const unsigned char* data, size_t dataSize, unsigned char** outputData) {
+    BIO* b64 = NULL;
+    BIO* bmem = NULL;
+    *outputData = new unsigned char[dataSize];
+    memset(*outputData, 0, dataSize);
+    b64 = BIO_new(BIO_f_base64());
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+    bmem = BIO_new_mem_buf(data, dataSize);
+    bmem = BIO_push(b64, bmem);
+    int outputSize = BIO_read(bmem, *outputData, dataSize);
+    BIO_free_all(bmem);
+
+    return outputSize;
+}
+
+std::string getVerify(std::string licenseData, std::string publicKey) {
+
+    char* pData = (char*)licenseData.c_str();
+    int dataSize = licenseData.length();
+
+    // 获取公钥
+    RSA* rsaPublicKey = getPublicKey(publicKey);
+
+    //
+    std::string ret = "";
+    // 每172字节
+    int off = 0;
+    while (off < dataSize)
+    {
+        int len = (off + 172) <= dataSize ? 172 : dataSize - off;
+
+        unsigned char* dec64 = nullptr;
+        size_t dec64Len = sslBase64Decode((unsigned char*)pData + off, len, (unsigned char**)&dec64);
+        if (dec64Len > 0 && dec64) {
+            // 使用公钥解密数据
+            unsigned char decrypted[256];
+            int decrypted_length = RSA_public_decrypt(dec64Len, dec64, decrypted, rsaPublicKey, RSA_PKCS1_PADDING);
+            if (decrypted_length >= 0) {
+                decrypted[decrypted_length] = '\0';
+                // 输出结果
+                //std::cout << "解密后的数据： " << decrypted << std::endl;
+                ret += string((char*)decrypted);
+            }
+            else {
+                std::cout << "解密失败 " << std::endl;
+            }
+
+            if (dec64) {
+                delete[]dec64;
+                dec64 = nullptr;
+            }
+        }
+
+        // 下一组
+        off += len;
+    }
+
+    // 释放资源
+    if (rsaPublicKey) {
+        RSA_free(rsaPublicKey);
+        rsaPublicKey = nullptr;
+    }
+
+    return ret;
+}
+
+
+std::string getMacAddr() {
+
+    std::string strMac = "";
+
+    FILE* fp;
+    char data[512];
+#ifdef  _WIN32
+    std::string command = "wmic csproduct get uuid"; // 在Windows下，替换为你想执行的命令
+
+    // 打开管道以读取命令的输出  
+    fp = _popen(command.c_str(), "r");
+    if (fp == NULL) {
+        //printf("Failed to run command\n");
+        return "";
+    }
+
+    // 读取命令的输出  
+    while (fgets(data, sizeof(data) - 1, fp) != NULL) {
+        //printf("getMacAddr : %s, %d \n", data, strlen(data));
+        if (0 != strncmp("UUID", data, 4)) {
+            strMac = data;
+            break;
+        }
+    }
+
+    // 关闭管道  
+    _pclose(fp);
+#else 
+    fp = fopen("/sys/class/dmi/id/product_uuid", "r");
+    if (fp) {
+        fgets(data, sizeof(data), fp);
+        strMac = data;
+        fclose(fp);
+    }
+#endif
+    return strMac;
+}
+
+bool myAuthorize(std::string licenseFile, int& threadNum, long long& endTime) {
+
+    // 读取License文件
+    FILE* fp = fopen(licenseFile.c_str(), "rb");
+    if (!fp) {
+        LOG(ERROR)<<("授权失败，未找到授权文件,")<<licenseFile;
+        return false;
+    }
+
+    fseek(fp, 0, SEEK_END);
+    int dataSize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    char* licenseData = new char[dataSize];
+    fread(licenseData, 1, dataSize, fp);
+    fclose(fp);
+
+    std::string public_key = "-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCzvRt1+YJp+tYXtPS4HXXOrOm9\n/tddhfBSiE7xHXMMESUcn/o5jcSdCxrQglsR10EenIH/Nb6DcscigAougPAgRgUR\ngPJ9Yy6LViSeG60jmAv4N1s6m6T5UeW8VcwuI7mfA0DD8iLbvypnMlZ1TLsqT0o9\nAxyWWsT7q3LaVfZyKQIDAQAB\n-----END PUBLIC KEY-----";
+    string ret = getVerify(licenseData, public_key);
+	LOG(INFO)<<"授权信息为："<<ret;
+    if (licenseData) {
+        delete[] licenseData;
+        licenseData = nullptr;
+    }
+
+    // 解析JSON字符串
+    json j = json::parse(ret);
+
+    //-----------------------------------
+    // mac address
+    // 判断是否存在 authorizations[0].activeInfo.macAddress、authorizations[0].controlInfo.macAddress、licenseDescriptionInfo.activeServerId	其中一个即可
+    //-----------------------------------
+    std::string localMac = getMacAddr(); //"40:B0:76:7F:52:7B";
+    if (localMac.empty()) {
+        LOG(ERROR)<<("授权失败，无法授权，读取本机唯一id失败 ! ");
+        return false;
+    }
+    std::string macAddress = "";
+    bool isMac = false;
+    if (j.contains("authorizations") && j["authorizations"].size() > 0)
+    {
+        if (j["authorizations"][0].contains("activeInfo") && j["authorizations"][0]["activeInfo"].contains("macAddress")) {
+            macAddress = j["authorizations"][0]["activeInfo"]["macAddress"];
+        }
+        else if (j["authorizations"][0].contains("controlInfo") && j["authorizations"][0]["controlInfo"].contains("macAddress")) {
+            macAddress = j["authorizations"][0]["controlInfo"]["macAddress"];
+        }
+    }
+    if (macAddress.empty())
+    {
+        if (j.contains("licenseDescriptionInfo") && j["licenseDescriptionInfo"].contains("activeServerId"))
+        {
+            macAddress = j["licenseDescriptionInfo"]["activeServerId"];
+        }
+    }
+    if (macAddress.empty() || 0 != strncmp(macAddress.c_str(), localMac.c_str(), macAddress.length())) {
+        LOG(ERROR)<<("授权失败,无效的license,非本机的授权文件! ");
+        return false;
+    }
+
+    //-----------------------------------
+    // date
+    // licenseDescriptionInfo.releaseDate + licenseDescriptionInfo.limit(月)  或者 authorizations[0].controlInfo.limitStart = releaseDate, authorizations[0].controlInfo.limitEnd = releaseDate + limit
+    //-----------------------------------
+    bool isDate = false;
+    int limit = 0;
+    long long limitStart = 0;
+    long long limitEnd = 0;
+    long long releaseDate = 0;
+    if (j.contains("authorizations") && j["authorizations"].size() > 0 && j["authorizations"][0].contains("controlInfo")) {
+        if (j["authorizations"][0]["controlInfo"].contains("limit")) {
+            limit = j["authorizations"][0]["controlInfo"]["limit"];
+        }
+        if (j["authorizations"][0]["controlInfo"].contains("limitStart")) {
+            limitStart = j["authorizations"][0]["controlInfo"]["limitStart"];
+        }
+        if (j["authorizations"][0]["controlInfo"].contains("limitEnd")) {
+            limitEnd = j["authorizations"][0]["controlInfo"]["limitEnd"];
+        }
+    }
+
+    // 获取当前时间的时间戳
+    time_t rawtime;
+    time(&rawtime);
+    long long curDate = (long long)rawtime * 1000;
+
+    if (limitStart > 0 && limitEnd > 0) {
+        //printf("%lld -> % lld \n", limitEnd, curDate);
+        if (limitEnd < curDate)
+        {
+            LOG(ERROR)<<("授权过期 !");
+            return false;
+        }
+        endTime = limitEnd;
+    }
+    else {
+        if (j.contains("licenseDescriptionInfo"))
+        {
+            if (0 == limit && j["licenseDescriptionInfo"].contains("limit")) {
+                limit = j["licenseDescriptionInfo"]["limit"];
+            }
+            if (0 == limitStart && j["licenseDescriptionInfo"].contains("releaseDate")) {
+                releaseDate = j["licenseDescriptionInfo"]["releaseDate"];
+            }
+        }
+        endTime = releaseDate + (long long)((double)limit * 31 * 24.0 * 3600.0 * 1000.0);
+        LOG(ERROR)<<("%lld -> % lld \n", limitEnd, curDate);
+        if (endTime < curDate)
+        {
+            LOG(ERROR)<<("授权过期 ! ");
+            return false;
+        }
+    }
+ 
+
+    //-----------------------------------
+    // maxUser
+    // authorizations[0].controlInfo.maxUser 
+    //-----------------------------------
+    if (j.contains("authorizations") && j["authorizations"].size() > 0)
+    {
+        if (j["authorizations"][0].contains("controlInfo") && j["authorizations"][0]["controlInfo"].contains("maxUser")) {
+            threadNum = j["authorizations"][0]["controlInfo"]["maxUser"];
+        }
+    }
+	LOG(INFO) <<"授权路数："<< threadNum;
+	if(threadNum <= 0)
+	{
+		LOG(INFO) <<"授权路数必须大于";
+		return false;
+	}
+    return true;
+}
+
+void checkFun(long long endTime) {
+    
+    time_t rawtime;
+    struct tm* timeinfo;
+    while (true)
+    {
+		time_t endTime_Time_t = static_cast<time_t>(endTime);
+		LOG(INFO) << "服务到期时间: " 
+              << std::put_time(localtime(&endTime_Time_t), "%Y-%m-%d %H:%M:%S");
+        // 获取当前时间的时间戳
+        time(&rawtime);
+        // 将时间戳转换为本地时间
+        timeinfo = localtime(&rawtime);
+        if (2 == timeinfo->tm_hour) {
+            long long curDate = (long long)rawtime * 1000;
+            if (endTime < curDate) {
+                LOG(ERROR) << "服务到期 !";
+                exit(0);
+            }
+        }
+        //printf("timeinfo->tm_hour=%d, endTime=%lld \n", timeinfo->tm_hour, endTime);
+        std::this_thread::sleep_for(std::chrono::seconds(600)); // 休眠60秒	  
+    }
+}
+
+/*************************************************************
+*
+*************************************************************/
+
 // hotwords
 std::unordered_map<std::string, int> hws_map_;
 int fst_inc_wts_=20;
@@ -135,6 +451,9 @@ int main(int argc, char* argv[]) {
     TCLAP::ValueArg<std::int32_t> fst_inc_wts("", FST_INC_WTS, 
         "the fst hotwords incremental bias", false, 20, "int32_t");
 
+    // qiuqiu+
+    TCLAP::ValueArg<std::string> license_file("", LICENSE_FILE, "license-file", false, "./asr-engine.license", "string");
+
     // add file
     cmd.add(hotword);
     cmd.add(fst_inc_wts);
@@ -167,8 +486,30 @@ int main(int argc, char* argv[]) {
     cmd.add(io_thread_num);
     cmd.add(decoder_thread_num);
     cmd.add(model_thread_num);
+
+    // qiuqiu + 
+    cmd.add(license_file);
+
     cmd.parse(argc, argv);
 
+    // qiuqiu
+    std::string licensefile = license_file.getValue();
+    if (licensefile.empty()) {
+        licensefile = "./asr-engine.license";
+    }
+    //printf( "licensefile=%s \n", licensefile.c_str());
+    int threadNum = 0;
+    long long endTime = 0;
+    if (!myAuthorize(licensefile, threadNum, endTime)) {
+        return 0;
+    }
+    // --decoder-thread-num  服务端线程池个数(支持的最大并发路数)，脚本会根据服务器线程数自动配置decoder-thread-num、io-thread-num
+    //int thread_num = decoder_thread_num.getValue();
+    //printf("decoder_thread_num=%d \n", thread_num);
+    // 起个线程检测服务是否到期
+    std::thread checkThread = std::thread(checkFun, endTime);		// 线程
+
+  
     std::map<std::string, std::string> model_path;
     GetValue(offline_model_dir, OFFLINE_MODEL_DIR, model_path);
     GetValue(online_model_dir, ONLINE_MODEL_DIR, model_path);
@@ -498,7 +839,9 @@ int main(int argc, char* argv[]) {
     std::string s_listen_ip = listen_ip.getValue();
     int s_port = port.getValue();
     int s_io_thread_num = io_thread_num.getValue();
-    int s_decoder_thread_num = decoder_thread_num.getValue();
+    // qiuqiu -
+    //int s_decoder_thread_num = decoder_thread_num.getValue();
+    int s_decoder_thread_num = threadNum;
 
     int s_model_thread_num = model_thread_num.getValue();
 
