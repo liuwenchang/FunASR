@@ -275,7 +275,6 @@ bool myAuthorize(std::string licenseFile, int& threadNum, long long& endTime) {
             }
         }
         endTime = releaseDate + (long long)((double)limit * 31 * 24.0 * 3600.0 * 1000.0);
-        LOG(ERROR)<<("%lld -> % lld \n", limitEnd, curDate);
         if (endTime < curDate)
         {
             LOG(ERROR)<<("授权过期 ! ");
@@ -309,7 +308,7 @@ void checkFun(long long endTime) {
     struct tm* timeinfo;
     while (true)
     {
-		time_t endTime_Time_t = static_cast<time_t>(endTime);
+		time_t endTime_Time_t = static_cast<time_t>(endTime / 1000);
 		LOG(INFO) << "服务到期时间: " 
               << std::put_time(localtime(&endTime_Time_t), "%Y-%m-%d %H:%M:%S");
         // 获取当前时间的时间戳
