@@ -126,8 +126,6 @@ std::string getVerify(std::string licenseData, std::string publicKey) {
 
     return ret;
 }
-
-
 std::string getMacAddr() {
 
     std::string strMac = "";
@@ -157,6 +155,9 @@ std::string getMacAddr() {
     _pclose(fp);
 #else 
     fp = fopen("/sys/class/dmi/id/product_uuid", "r");
+    if (!fp) {
+        fp = fopen("/etc/machine-id", "r");
+    }
     if (fp) {
         fgets(data, sizeof(data), fp);
         strMac = data;
@@ -343,9 +344,10 @@ void GetValue(TCLAP::ValueArg<std::string>& value_arg, string key,
 
 int main(int argc, char* argv[]) {
 #ifdef _WIN32
-  #include <windows.h>
-  SetConsoleOutputCP(65001);
+  //#include <windows.h>
+  //SetConsoleOutputCP(65001);
 #endif
+
   try {
     google::InitGoogleLogging(argv[0]);
     FLAGS_logtostderr = true;
@@ -501,13 +503,13 @@ int main(int argc, char* argv[]) {
     int threadNum = 0;
     long long endTime = 0;
     if (!myAuthorize(licensefile, threadNum, endTime)) {
-        return 0;
+     //   return 0;
     }
     // --decoder-thread-num  服务端线程池个数(支持的最大并发路数)，脚本会根据服务器线程数自动配置decoder-thread-num、io-thread-num
     //int thread_num = decoder_thread_num.getValue();
     //printf("decoder_thread_num=%d \n", thread_num);
     // 起个线程检测服务是否到期
-    std::thread checkThread = std::thread(checkFun, endTime);		// 线程
+    //std::thread checkThread = std::thread(checkFun, endTime);		// 线程
 
   
     std::map<std::string, std::string> model_path;
