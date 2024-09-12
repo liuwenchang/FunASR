@@ -156,15 +156,20 @@ std::string getMacAddr() {
     // 关闭管道  
     _pclose(fp);
 #else 
-    fp = fopen("/sys/class/dmi/id/product_uuid", "r");
-    if (!fp) {
-        fp = fopen("/etc/machine-id", "r");
+    std::string command = "ip addr | grep link/ether | sed -n '2p' | awk '{print $2}' |md5sum | awk '{print $1}'";
+    // 打开管道以读取命令的输出  
+    fp = popen(command.c_str(), "r");
+    if (fp == NULL) {
+        //printf("Failed to run command\n");
+        return "";
     }
-    if (fp) {
-        fgets(data, sizeof(data), fp);
-        strMac = data;
-        fclose(fp);
-    }
+
+    // 读取命令的输出 
+    fgets(data, sizeof(data) - 1, fp);
+    strMac = data;
+
+    // 关闭管道  
+    pclose(fp);
 #endif
     return strMac;
 }
@@ -249,12 +254,27 @@ bool myAuthorize(std::string licenseFile, int& threadNum, long long& endTime) {
             limitEnd = j["authorizations"][0]["controlInfo"]["limitEnd"];
         }
     }
-
+    if (j.contains("licenseDescriptionInfo")) 
+    {
+        if (0 == limit && j["licenseDescriptionInfo"].contains("limit")) {
+            limit = j["licenseDescriptionInfo"]["limit"];
+        }
+        if (j["licenseDescriptionInfo"].contains("releaseDate")) {
+            releaseDate = j["licenseDescriptionInfo"]["releaseDate"];
+        }
+    }
     // 获取当前时间的时间戳
     time_t rawtime;
     time(&rawtime);
     long long curDate = (long long)rawtime * 1000;
-
+    if (releaseDate == 0) {
+        LOG(ERROR) << ("获取授权文件发布时间失败 ! ");
+        return false;
+    }
+    if (releaseDate > curDate) {
+        LOG(ERROR) << ("系统时间异常，请将系统时间调整准确！ ");
+        return false;
+    }
     if (limitStart > 0 && limitEnd > 0) {
         //printf("%lld -> % lld \n", limitEnd, curDate);
         if (limitEnd < curDate)
@@ -265,15 +285,6 @@ bool myAuthorize(std::string licenseFile, int& threadNum, long long& endTime) {
         endTime = limitEnd;
     }
     else {
-        if (j.contains("licenseDescriptionInfo"))
-        {
-            if (0 == limit && j["licenseDescriptionInfo"].contains("limit")) {
-                limit = j["licenseDescriptionInfo"]["limit"];
-            }
-            if (0 == limitStart && j["licenseDescriptionInfo"].contains("releaseDate")) {
-                releaseDate = j["licenseDescriptionInfo"]["releaseDate"];
-            }
-        }
         endTime = releaseDate + (long long)((double)limit * 31 * 24.0 * 3600.0 * 1000.0);
         if (endTime < curDate)
         {
@@ -303,25 +314,31 @@ bool myAuthorize(std::string licenseFile, int& threadNum, long long& endTime) {
 }
 
 void checkFun(long long endTime) {
-    
-    time_t rawtime;
+    time_t previewDate_t = 0;
+    time_t rawtime_t;
     struct tm* timeinfo;
+    time_t endTime_Time_t = static_cast<time_t>(endTime / 1000);
+    LOG(INFO) << "服务到期时间: "
+        << std::put_time(localtime(&endTime_Time_t), "%Y-%m-%d %H:%M:%S");
+    int tipTime = 15 * 3600 * 24; //15天即将到期,单位秒
     while (true)
     {
-		time_t endTime_Time_t = static_cast<time_t>(endTime / 1000);
-		LOG(INFO) << "服务到期时间: " 
-              << std::put_time(localtime(&endTime_Time_t), "%Y-%m-%d %H:%M:%S");
         // 获取当前时间的时间戳
-        time(&rawtime);
+        time(&rawtime_t);
+        if (endTime_Time_t - rawtime_t < tipTime)
+        {
+            LOG(WARNING) << "服务即将到期: "
+                << std::put_time(localtime(&endTime_Time_t), "%Y-%m-%d %H:%M:%S");
+        }
         // 将时间戳转换为本地时间
-        timeinfo = localtime(&rawtime);
+        timeinfo = localtime(&rawtime_t);
         if (2 == timeinfo->tm_hour) {
-            long long curDate = (long long)rawtime * 1000;
-            if (endTime < curDate) {
+            if (endTime_Time_t < rawtime_t) {
                 LOG(ERROR) << "服务到期 !";
                 exit(0);
             }
         }
+        previewDate_t = rawtime_t;
         //printf("timeinfo->tm_hour=%d, endTime=%lld \n", timeinfo->tm_hour, endTime);
         std::this_thread::sleep_for(std::chrono::seconds(600)); // 休眠60秒	  
     }

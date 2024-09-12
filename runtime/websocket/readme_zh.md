@@ -60,6 +60,7 @@ cd FunASR/runtime/websocket
 mkdir build
 cd build
 cmake ../ -D OPENSSL_ROOT_DIR=d:/openssl-1.1.1w -D FFMPEG_DIR=d:/ffmpeg-master-latest-win64-gpl-shared -D ONNXRUNTIME_DIR=d:/onnxruntime-win-x64-1.16.1
+cmake -A x64  -T host=x64 ../ -D OPENSSL_ROOT_DIR=F:/Funasr/openssl-1.1.1w -D FFMPEG_DIR=F:/Funasr/ffmpeg-master-latest-win64-gpl-shared -D ONNXRUNTIME_DIR=F:/Funasr/onnxruntime-win-x64-1.16.1
 ```
 Visual Studio 打开 FunASR/runtime/websocket/build/FunASRWebscoket.sln 完成编译；
 编译后的可执行文件位于：FunASR/runtime/websocket/build/bin/Debug;
